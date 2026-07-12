@@ -1,0 +1,6 @@
+{
+  "name": "Training and School Portal",
+  "description": "A clean, real-time Pakistan-centric training and school management portal featuring HEC, BISE, and PITB registries with dedicated dashboards for Trainers and Students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
