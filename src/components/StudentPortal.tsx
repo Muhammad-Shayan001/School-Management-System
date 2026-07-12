@@ -23,8 +23,9 @@ import {
   X,
   Play
 } from 'lucide-react';
-import { StudentCourse, FeeHistory, Quiz } from '../types';
+import { StudentCourse, FeeHistory, Quiz, QuizQuestion } from '../types';
 import { portalApi } from '../lib/apiClient';
+import { calculateQuizResult } from '../lib/quizUtils';
 
 interface StudentPortalProps {
   onSwitchToTrainer: () => void;
@@ -53,6 +54,10 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
   
   const [showVideoModal, setShowVideoModal] = useState(false);
+  const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
+  const [quizResults, setQuizResults] = useState<Record<string, { score: number; totalPoints: number; correctAnswers: number; accuracy: number }>>({});
+  const [submittedQuizIds, setSubmittedQuizIds] = useState<string[]>([]);
 
   // Student Courses Mock Data
   const [courses, setCourses] = useState<StudentCourse[]>([
@@ -138,17 +143,11 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
   const [isLoading, setIsLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
-  const [simulateFailure, setSimulateFailure] = useState(false);
 
   const loadStudentData = async () => {
     setIsLoading(true);
     setApiError(null);
     try {
-      if (typeof window !== 'undefined') {
-        (window as any).SIMULATE_API_FAILURE = simulateFailure;
-      }
-      
-      // Parallel fetches for low latency
       const [fetchedCourses, fetchedQuizzes] = await Promise.all([
         portalApi.getCourses('student'),
         portalApi.getQuizzes('student')
@@ -165,8 +164,8 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
   };
 
   useEffect(() => {
-    loadStudentData();
-  }, [simulateFailure]);
+    void loadStudentData();
+  }, []);
 
   // Quiz Rules
   const quizRules = [
@@ -193,7 +192,46 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
     }, 1500);
   };
 
-  // Find course selected for detail progress view
+  const handleStartQuiz = (quiz: Quiz) => {
+    setActiveQuiz(quiz);
+    setQuizAnswers({});
+  };
+
+  const handleQuizAnswerChange = (questionId: string, optionId: string) => {
+    setQuizAnswers((prev) => ({ ...prev, [questionId]: optionId }));
+  };
+
+  const handleSubmitQuiz = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!activeQuiz) return;
+
+    const result = calculateQuizResult(activeQuiz as any, quizAnswers);
+
+    // submit attempt to backend for persistence
+    (async () => {
+      try {
+        const studentId = (activeDetailCourse && activeDetailCourse.rollNumber) || 'demo-student';
+        const attempt = await portalApi.submitQuizAttempt('student', {
+          quizId: activeQuiz.id,
+          studentId,
+          studentName: 'Shayan Javed',
+          answers: Object.entries(quizAnswers).map(([questionId, selectedOptionId]) => ({ questionId, selectedOptionId })),
+          score: result.score,
+          totalPoints: result.totalPoints
+        });
+
+        // persist result locally for UI
+        setQuizResults((prev) => ({ ...prev, [activeQuiz.id]: result }));
+        setSubmittedQuizIds((prev) => prev.includes(activeQuiz.id) ? prev : [...prev, activeQuiz.id]);
+      } catch (err: any) {
+        // still show local result if backend fails
+        setQuizResults((prev) => ({ ...prev, [activeQuiz.id]: result }));
+        setSubmittedQuizIds((prev) => prev.includes(activeQuiz.id) ? prev : [...prev, activeQuiz.id]);
+        console.error('Quiz submission failed:', err?.message || err);
+      }
+    })();
+  };
+
   const activeDetailCourse = courses.find(c => c.id === selectedCourseId) || courses[0];
 
   // Filters search
@@ -250,29 +288,21 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
       {/* PORTAL WORKSPACE */}
       <main className="flex-1 p-4 md:p-8 max-w-5xl mx-auto w-full animate-fade-in space-y-6">
         
-        {/* SECURE API SIMULATION CONTROL */}
+        {/* SUPABASE STATUS BAR */}
         <div className={`p-4 rounded-xl border flex flex-col sm:flex-row justify-between items-center gap-3 text-xs ${
           isDarkMode ? 'bg-slate-800/80 border-slate-700/80' : 'bg-slate-50 border-slate-200/60 shadow-3xs'
         }`}>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 animate-pulse"></span>
-            <span className="font-bold text-slate-700 dark:text-slate-300">SECURE DISPATCHED LEDGER: VALIDATED</span>
+            <span className="font-bold text-slate-700 dark:text-slate-300">SUPABASE LIVE SYNC: ACTIVE</span>
           </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input 
-                type="checkbox" 
-                checked={simulateFailure} 
-                onChange={(e) => setSimulateFailure(e.target.checked)}
-                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-              />
-              <span className="text-slate-600 dark:text-slate-400 font-bold font-mono text-[10px]">Simulate HEC Connection Error</span>
-            </label>
+          <div className="flex items-center gap-3">
+            <span className="text-slate-500 dark:text-slate-400 text-[10px]">Courses and quizzes load from your connected backend.</span>
             <button
-              onClick={() => loadStudentData()}
+              onClick={() => void loadStudentData()}
               className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all text-[11px]"
             >
-              Force Sync
+              Refresh Data
             </button>
           </div>
         </div>
@@ -286,18 +316,10 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
             <p className="text-[11px] font-mono leading-relaxed">{apiError}</p>
             <div className="flex gap-2 pt-1">
               <button 
-                onClick={() => loadStudentData()}
+                onClick={() => void loadStudentData()}
                 className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition-all"
               >
                 Retry Connection
-              </button>
-              <button 
-                onClick={() => setSimulateFailure(false)}
-                className={`px-3.5 py-1.5 font-bold text-xs rounded-lg transition-all ${
-                  isDarkMode ? 'bg-slate-850 text-slate-300 hover:bg-slate-750' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                }`}
-              >
-                Disable Simulation
               </button>
             </div>
           </div>
@@ -733,14 +755,14 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
                         </div>
                       </div>
 
-                      {quiz.status === 'COMPLETED' ? (
+                      {quiz.status === 'COMPLETED' || submittedQuizIds.includes(quiz.id) ? (
                         <div className="bg-green-50 dark:bg-green-950/20 p-2.5 rounded-xl border border-green-100 dark:border-green-900/30 flex justify-between items-center text-xs text-green-850 dark:text-green-300">
-                          <span className="font-medium">Score: <strong className="font-bold font-mono">{quiz.score || '92/100'}</strong></span>
+                          <span className="font-medium">Score: <strong className="font-bold font-mono">{quiz.score || `${quizResults[quiz.id]?.score ?? 0}/${quizResults[quiz.id]?.totalPoints ?? quiz.totalQuestions}`}</strong></span>
                           <span className="text-[9px] font-mono text-green-600">✓ Verified Ledger Seal</span>
                         </div>
                       ) : (
                         <button
-                          onClick={() => alert(`Exam Room for "${quiz.title}" has been securely loaded. Live proctoring session initiated.`)}
+                          onClick={() => handleStartQuiz(quiz)}
                           className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                         >
                           <Play size={12} /> Start Assessment Attempt
@@ -752,6 +774,51 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
               )}
             </div>
 
+          </div>
+        )}
+
+        {activeQuiz && (
+          <div className={`rounded-3xl border p-6 shadow-sm ${isDarkMode ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-blue-600">Live Assessment</p>
+                <h2 className="mt-1 text-xl font-semibold">{activeQuiz.title}</h2>
+                <p className="mt-1 text-sm text-slate-500">{activeQuiz.timeLimitMinutes} minutes • {activeQuiz.totalQuestions} questions</p>
+              </div>
+              <button onClick={() => setActiveQuiz(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">×</button>
+            </div>
+
+            <form onSubmit={handleSubmitQuiz} className="mt-6 space-y-4">
+              {(activeQuiz.questions ?? []).map((question, index) => (
+                <div key={question.id} className={`rounded-2xl border p-4 ${isDarkMode ? 'border-slate-700 bg-slate-900/50' : 'border-slate-200 bg-slate-50'}`}>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold">{index + 1}. {question.prompt}</p>
+                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-semibold text-blue-700">{question.points} pts</span>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {question.options.map((option) => (
+                      <label key={option.id} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                        <input type="radio" name={question.id} checked={quizAnswers[question.id] === option.id} onChange={() => handleQuizAnswerChange(question.id, option.id)} />
+                        <span>{option.text}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-slate-500">Answer all questions and submit to view your marks out of total and correct answers.</p>
+                <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Submit Quiz</button>
+              </div>
+            </form>
+
+            {activeQuiz && quizResults[activeQuiz.id] && (
+              <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800">
+                <p className="text-sm font-semibold">Result published</p>
+                <p className="mt-2 text-sm">You scored {quizResults[activeQuiz.id].score} out of {quizResults[activeQuiz.id].totalPoints} points with {quizResults[activeQuiz.id].correctAnswers} correct answer{quizResults[activeQuiz.id].correctAnswers === 1 ? '' : 's'}.</p>
+                <p className="mt-1 text-sm font-semibold">Accuracy: {quizResults[activeQuiz.id].accuracy}%</p>
+              </div>
+            )}
           </div>
         )}
 

@@ -1,46 +1,15 @@
-/**
- * SECURE API CLIENT WITH VALIDATION AND JWT AUTHORIZATION FOR THE ACADEMIC PORTAL
- * Features:
- * - Dynamic cryptographically structure-aligned Mock JWT generation for student and trainer.
- * - Robust schema validation layers to catch corrupted/malformed API payloads.
- * - Configurable simulated failures and latency to display skeletons and error states.
- */
+import { StudentCourse, Quiz, QuizQuestion } from '../types';
+import {
+  createCourse,
+  createQuiz,
+  createQuizAttempt,
+  getQuizAttempts,
+  getAttendance,
+  getCourses,
+  getQuizzes,
+  submitAttendance
+} from './supabaseClient';
 
-import { StudentCourse, FeeHistory, Quiz } from '../types';
-
-// Let the developer or user toggle API failure simulation for testing error handling in the UI
-if (typeof window !== 'undefined') {
-  (window as any).SIMULATE_API_FAILURE = false;
-  (window as any).SIMULATE_API_DELAY_MS = 800; // Simulated network delay
-}
-
-// Generates an HEC/PITB accredited mock JWT header + payload + signature
-function generateMockJwtToken(role: 'student' | 'trainer'): string {
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  
-  const payload = role === 'student' 
-    ? {
-        id: "usr-student-1082",
-        email: "shayan.javed091@gmail.com",
-        role: "student",
-        name: "Shayan Javed"
-      }
-    : {
-        id: "usr-trainer-8942",
-        email: "tariq.mahmood@pitb.gov.pk",
-        role: "trainer",
-        name: "Prof. Dr. Tariq Mahmood"
-      };
-
-  const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, '');
-  const signature = "MOCK_SIGNATURE_LEDGER_HEC_2026_PITB_SECURE_TOKEN_VAL";
-  
-  return `${header}.${encodedPayload}.${signature}`;
-}
-
-/**
- * Validates the schema of course payload objects coming from API endpoints
- */
 function validateCoursePayload(course: any): StudentCourse {
   if (!course || typeof course !== 'object') {
     throw new Error('Course record is missing or not a valid object structure.');
@@ -52,7 +21,6 @@ function validateCoursePayload(course: any): StudentCourse {
     throw new Error(`Malformed Course Title for ID [${course.id}]: expected string`);
   }
 
-  // Fallback default properties to make it secure and unhackable
   return {
     id: course.id,
     title: course.title,
@@ -70,73 +38,80 @@ function validateCoursePayload(course: any): StudentCourse {
   };
 }
 
-/**
- * Safe fetch wrapper with automated bearer token injecting and payload validation
- */
+function parseBody(body: RequestInit['body']): any {
+  if (!body) return {};
+  if (typeof body === 'string') {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return {};
+    }
+  }
+  return body as any;
+}
+
 export async function safeFetch<T>(
-  endpoint: string, 
-  role: 'student' | 'trainer', 
+  endpoint: string,
+  role: 'student' | 'trainer',
   options: RequestInit = {},
   validator: (data: any) => T
 ): Promise<T> {
-  // 1. Simulate Latency
-  const delay = typeof window !== 'undefined' ? ((window as any).SIMULATE_API_DELAY_MS || 800) : 800;
-  await new Promise(resolve => setTimeout(resolve, delay));
-
-  // 2. Simulate Failure if activated
-  if (typeof window !== 'undefined' && (window as any).SIMULATE_API_FAILURE) {
-    throw new Error('Simulated Network Fail: Pakistan core academic database replica timed out (504 Gateway Timeout).');
-  }
-
-  // 3. Prepare headers with Authorization JWT
-  const headers = new Headers(options.headers || {});
-  headers.set('Authorization', `Bearer ${generateMockJwtToken(role)}`);
-  headers.set('Content-Type', 'application/json');
-
-  const finalOptions = {
-    ...options,
-    headers
-  };
-
   try {
-    const response = await fetch(endpoint, finalOptions);
-
-    if (!response.ok) {
-      let errorMsg = `HTTP Error ${response.status}: Failed to synchronize with education ledger.`;
-      try {
-        const errJson = await response.json();
-        if (errJson && errJson.message) {
-          errorMsg = errJson.message;
-        }
-      } catch (e) {
-        // ignore
+    if (endpoint === '/api/courses') {
+      if (options.method === 'POST') {
+        const createdCourse = await createCourse(role, parseBody(options.body));
+        return validator({ course: createdCourse });
       }
-      throw new Error(errorMsg);
+
+      const courses = await getCourses(role);
+      return validator({ courses });
     }
 
-    const json = await response.json();
-    
-    // Ensure success signature exists
-    if (json && json.success === false) {
-      throw new Error(json.message || 'HEC database server returned failure flag.');
+    if (endpoint === '/api/quizzes' || endpoint.startsWith('/api/quizzes')) {
+      if (options.method === 'POST') {
+        const quiz = await createQuiz(role, parseBody(options.body));
+        return validator({ quiz });
+      }
+
+      const params = new URL(endpoint, 'http://localhost').searchParams;
+      const quizzes = await getQuizzes(role, params.get('courseId') || undefined);
+      return validator({ quizzes });
     }
 
-    // 4. Run payload validation layer
-    return validator(json);
+    if (endpoint === '/api/quizzes/attempts' || endpoint.startsWith('/api/quizzes/attempts')) {
+      if (options.method === 'POST') {
+        const attempt = await createQuizAttempt(role, parseBody(options.body));
+        return validator({ attempt });
+      }
 
+      const params = new URL(endpoint, 'http://localhost').searchParams;
+      const quizId = params.get('quizId') || '';
+      const attempts = await getQuizAttempts(role, quizId);
+      return validator({ attempts });
+    }
+
+    if (endpoint === '/api/attendance' || endpoint.startsWith('/api/attendance')) {
+      if (options.method === 'POST') {
+        const result = await submitAttendance(role, parseBody(options.body));
+        return validator(result);
+      }
+
+      const params = new URL(endpoint, 'http://localhost').searchParams;
+      const records = await getAttendance(role, {
+        courseId: params.get('courseId') || undefined,
+        rollNumber: params.get('rollNumber') || undefined
+      });
+      return validator({ records });
+    }
+
+    throw new Error('Unsupported endpoint');
   } catch (error: any) {
-    console.error(`[API Validate Error] Fetch failed on ${endpoint}:`, error);
-    throw new Error(error.message || 'Connection lost to BISE/HEC secure endpoints. Check internet and try again.');
+    console.error(`[Supabase API] Request failed on ${endpoint}:`, error);
+    throw new Error(error.message || 'Unable to sync with Supabase right now.');
   }
 }
 
-/**
- * Exported functions to interact with our newly made App API
- */
 export const portalApi = {
-  /**
-   * Loads courses for student or trainer portal with validation schema checks
-   */
   getCourses: async (role: 'student' | 'trainer'): Promise<StudentCourse[]> => {
     return safeFetch<StudentCourse[]>(
       '/api/courses',
@@ -151,9 +126,6 @@ export const portalApi = {
     );
   },
 
-  /**
-   * Triggers a new accredited course slot allocation
-   */
   createCourse: async (role: 'trainer', courseData: Partial<StudentCourse>): Promise<StudentCourse> => {
     return safeFetch<StudentCourse>(
       '/api/courses',
@@ -171,9 +143,6 @@ export const portalApi = {
     );
   },
 
-  /**
-   * Retrieves active quizzes with security audit compliance parameters
-   */
   getQuizzes: async (role: 'student' | 'trainer', courseId?: string): Promise<Quiz[]> => {
     const url = courseId ? `/api/quizzes?courseId=${encodeURIComponent(courseId)}` : '/api/quizzes';
     return safeFetch<Quiz[]>(
@@ -192,16 +161,27 @@ export const portalApi = {
           timeLimitMinutes: Number(q.timeLimitMinutes) || 20,
           status: String(q.status || 'INACTIVE'),
           score: q.score ? String(q.score) : undefined,
-          securityLevel: String(q.securityLevel || 'Standard HEC Security')
+          securityLevel: String(q.securityLevel || 'Standard HEC Security'),
+          questions: Array.isArray(q.questions)
+            ? q.questions.map((question: QuizQuestion) => ({
+                id: String(question.id || `q-${Math.random()}`),
+                prompt: String(question.prompt || ''),
+                points: Number(question.points) || 1,
+                options: Array.isArray(question.options)
+                  ? question.options.map((option: any) => ({
+                      id: String(option.id || `opt-${Math.random()}`),
+                      text: String(option.text || ''),
+                      isCorrect: Boolean(option.isCorrect)
+                    }))
+                  : []
+              }))
+            : []
         }));
       }
     );
   },
 
-  /**
-   * Submits new quizzes/assessments
-   */
-  createQuiz: async (role: 'trainer', quizData: { title: string; courseId: string; totalQuestions: number; timeLimitMinutes: number }): Promise<any> => {
+  createQuiz: async (role: 'trainer', quizData: { title: string; courseId: string; totalQuestions: number; timeLimitMinutes: number; questions?: QuizQuestion[]; status?: string }): Promise<any> => {
     return safeFetch<any>(
       '/api/quizzes',
       role,
@@ -218,12 +198,41 @@ export const portalApi = {
     );
   },
 
-  /**
-   * Retrieves attendance records
-   */
+  submitQuizAttempt: async (role: 'student' | 'trainer', payload: { quizId: string; studentId: string; studentName?: string; answers: any[]; score: number; totalPoints: number }): Promise<any> => {
+    return safeFetch<any>(
+      '/api/quizzes/attempts',
+      role,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      (json) => {
+        if (!json || !json.attempt) {
+          throw new Error('Invalid schema: Quiz attempt confirmation missing.');
+        }
+        return json.attempt;
+      }
+    );
+  },
+
+  getQuizAttempts: async (role: 'trainer' | 'student', quizId: string): Promise<any[]> => {
+    const url = `/api/quizzes/attempts?quizId=${encodeURIComponent(quizId)}`;
+    return safeFetch<any[]>(
+      url,
+      role,
+      { method: 'GET' },
+      (json) => {
+        if (!json || !Array.isArray(json.attempts)) {
+          throw new Error('Invalid schema: Quiz attempts missing in response.');
+        }
+        return json.attempts;
+      }
+    );
+  },
+
   getAttendance: async (role: 'student' | 'trainer', params?: { courseId?: string; rollNumber?: string }): Promise<any[]> => {
     let url = '/api/attendance';
-    const queryParts = [];
+    const queryParts: string[] = [];
     if (params?.courseId) queryParts.push(`courseId=${encodeURIComponent(params.courseId)}`);
     if (params?.rollNumber) queryParts.push(`rollNumber=${encodeURIComponent(params.rollNumber)}`);
     if (queryParts.length > 0) url += `?${queryParts.join('&')}`;
@@ -241,9 +250,6 @@ export const portalApi = {
     );
   },
 
-  /**
-   * Submits daily attendance lists to server
-   */
   submitAttendance: async (role: 'trainer', payload: { courseId: string; date: string; studentsList: any[] }): Promise<any> => {
     return safeFetch<any>(
       '/api/attendance',

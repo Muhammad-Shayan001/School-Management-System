@@ -17,12 +17,14 @@ import {
   BookOpen, 
   ShieldCheck, 
   Bell,
-  X
+  X,
+  LayoutGrid
 } from 'lucide-react';
+import AdminPortal from './components/AdminPortal';
 
 export default function App() {
-  // Global active role: 'landing' (selector), 'trainer' or 'student'
-  const [role, setRole] = useState<'landing' | 'trainer' | 'student'>('landing');
+  // Global active role: 'landing' (selector), 'trainer', 'student', or 'admin'
+  const [role, setRole] = useState<'landing' | 'trainer' | 'student' | 'admin'>('landing');
   
   // Real-time PKT Date & Time Clock
   const [pktTime, setPktTime] = useState<string>('');
@@ -363,6 +365,27 @@ export default function App() {
                     </p>
                   </div>
                 </motion.button>
+
+                {/* Option C: Admin */}
+                <motion.button
+                  variants={itemVariants}
+                  id="role-select-admin"
+                  onClick={() => setRole('admin')}
+                  className="w-full flex items-center gap-4 p-4 border border-slate-200/60 rounded-xl bg-white text-left hover:border-emerald-600 hover:bg-emerald-50/10 hover:shadow-xs transition-all group cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-lg bg-violet-50 text-violet-700 flex items-center justify-center group-hover:bg-violet-100 transition-colors shrink-0">
+                    <LayoutGrid size={22} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-sm text-slate-800">Admin Operations Dashboard</h3>
+                      <span className="text-[9px] font-mono font-bold bg-violet-100 text-violet-800 px-1.5 py-0.5 rounded uppercase">OPS</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Create courses, publish quizzes, and sync attendance all from one control center.
+                    </p>
+                  </div>
+                </motion.button>
               </div>
 
               {/* Informational badge */}
@@ -518,6 +541,11 @@ export default function App() {
       {/* STUDENT VIEW */}
       {role === 'student' && (
         <StudentPortal onSwitchToTrainer={() => setRole('trainer')} />
+      )}
+
+      {/* ADMIN VIEW */}
+      {role === 'admin' && (
+        <AdminPortal onSwitchToStudent={() => setRole('student')} onSwitchToTrainer={() => setRole('trainer')} />
       )}
 
       {/* DYNAMIC ROLE WATERMARK SWITCHER FOR EASY IN-APP NAVIGATION */}

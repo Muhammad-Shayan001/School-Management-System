@@ -26,8 +26,9 @@ import {
   X,
   Search
 } from 'lucide-react';
-import { TrainerProfile, AttendanceRecord, StudentCourse } from '../types';
+import { TrainerProfile, AttendanceRecord, StudentCourse, Quiz, QuizQuestion, QuizOption } from '../types';
 import { portalApi } from '../lib/apiClient';
+import { buildAttendanceRecords, buildClassDatesForRange } from '../lib/attendanceUtils';
 
 interface TrainerPortalProps {
   onSwitchToStudent: () => void;
@@ -92,17 +93,15 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   // Async API hooks and error handlers
   const [isLoading, setIsLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [simulateFailure, setSimulateFailure] = useState(false);
 
   const loadTrainerData = async () => {
     setIsLoading(true);
     setApiError(null);
     try {
-      if (typeof window !== 'undefined') {
-        (window as any).SIMULATE_API_FAILURE = simulateFailure;
-      }
-      
-      const fetchedCourses = await portalApi.getCourses('trainer');
+      const [fetchedCourses, fetchedQuizzes] = await Promise.all([
+        portalApi.getCourses('trainer'),
+        portalApi.getQuizzes('trainer')
+      ]);
       
       // Transform verified HEC courses into assigned slots representation
       const slots: TrainingSlot[] = fetchedCourses.map((course) => ({
@@ -115,6 +114,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
       }));
       
       setAssignedSlots(slots);
+      setQuizzes(fetchedQuizzes);
     } catch (err: any) {
       setApiError(err.message || 'HEC Central Ledger Database timed out.');
     } finally {
@@ -123,24 +123,61 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   };
 
   useEffect(() => {
-    loadTrainerData();
-  }, [simulateFailure]);
+    void loadTrainerData();
+  }, []);
 
   const [showAddSlotModal, setShowAddSlotModal] = useState(false);
   const [newSlot, setNewSlot] = useState({ courseName: '', batch: '', time: '', room: '', students: 15 });
+  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [quizBuilder, setQuizBuilder] = useState({
+    title: '',
+    courseId: 'course-1',
+    totalQuestions: '1',
+    timeLimitMinutes: '15',
+    status: 'PUBLISHED'
+  });
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([
+    {
+      id: `q-${Date.now()}-1`,
+      prompt: '',
+      points: 1,
+      options: [
+        { id: `opt-${Date.now()}-1`, text: '', isCorrect: true },
+        { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }
+      ]
+    }
+  ]);
+  const [quizMessage, setQuizMessage] = useState<string | null>(null);
+
+  const formatDateInputValue = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatLongDate = (date: Date) => date.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  });
 
   // Calendar state
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 6, 11)); // July 11, 2026 (as per system date)
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<number | null>(11);
+  const [currentDate, setCurrentDate] = useState(() => new Date());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<number | null>(new Date().getDate());
 
   // Attendance state
   const [selectedSlot, setSelectedSlot] = useState('all');
   const [attendanceView, setAttendanceView] = useState<'overall' | 'slot'>('overall');
-  const [fromDate, setFromDate] = useState('2026-07-01');
-  const [toDate, setToDate] = useState('2026-07-11');
+  const [fromDate, setFromDate] = useState(() => formatDateInputValue(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
+  const [toDate, setToDate] = useState(() => formatDateInputValue(new Date()));
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [checkedInRollsByDate, setCheckedInRollsByDate] = useState<Record<string, string[]>>({});
+  const [qrScanInput, setQrScanInput] = useState('');
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
   const recordsPerPage = 5;
 
   // Mock student directory to populate attendance
@@ -156,27 +193,20 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   ];
 
   const handleGenerateAttendance = () => {
-    // Generate records based on selected date range and slot
-    const statuses: ('Present' | 'Late' | 'Absent')[] = ['Present', 'Late', 'Absent', 'Present', 'Present'];
-    const slots = [
-      'Morning Slot (09:00 AM - 12:00 PM)',
-      'Afternoon Slot (02:00 PM - 05:00 PM)',
-      'Evening Slot (06:00 PM - 09:00 PM)'
-    ];
+    const scheduleSlots = selectedSlot === 'all'
+      ? assignedSlots.map((slot: TrainingSlot) => slot.time)
+      : [selectedSlot];
 
-    const list: AttendanceRecord[] = [];
-    mockStudents.forEach((student, index) => {
-      const status = statuses[(index + (selectedSlot === 'all' ? 1 : 2)) % statuses.length];
-      const lateMinutes = status === 'Late' ? Math.floor(Math.random() * 45) + 5 : 0;
-      list.push({
-        id: `att-${index}-${Date.now()}`,
-        studentName: student.name,
-        rollNumber: student.roll,
-        date: toDate || '2026-07-11',
-        status,
-        lateMinutes,
-        slot: selectedSlot === 'all' ? slots[index % slots.length] : selectedSlot
-      });
+    const resolvedSlots = scheduleSlots.length > 0 ? scheduleSlots : ['Monday 10:00 AM - 01:00 PM'];
+
+    const list = buildAttendanceRecords({
+      students: mockStudents.map((student) => ({ name: student.name, rollNumber: student.roll })),
+      slotLabel: selectedSlot === 'all' ? resolvedSlots[0] : selectedSlot,
+      scheduleSlots: resolvedSlots,
+      startDate: fromDate,
+      endDate: toDate,
+      checkedInRollsByDate,
+      courseId: 'course-1'
     });
 
     setAttendanceRecords(list);
@@ -185,6 +215,39 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
 
   const handleClearAttendance = () => {
     setAttendanceRecords([]);
+  };
+
+  const handleQrScan = () => {
+    const payload = qrScanInput.trim();
+    if (!payload.startsWith('SCHOOL-QR|')) {
+      setScanMessage('That code is not a valid school attendance QR payload.');
+      return;
+    }
+
+    const parts = payload.split('|');
+    if (parts.length < 4) {
+      setScanMessage('The QR payload is incomplete.');
+      return;
+    }
+
+    const [, rollNumber, , date] = parts;
+    const selectedDate = date || toDate || formatDateInputValue(new Date());
+
+    setCheckedInRollsByDate((prev: Record<string, string[]>) => ({
+      ...prev,
+      [selectedDate]: Array.from(new Set([...(prev[selectedDate] ?? []), rollNumber]))
+    }));
+
+    setAttendanceRecords((prev: AttendanceRecord[]) =>
+      prev.map((record: AttendanceRecord) =>
+        record.rollNumber === rollNumber && record.date === selectedDate
+          ? { ...record, status: 'Present', lateMinutes: 0 }
+          : record
+      )
+    );
+
+    setScanMessage(`Checked in ${rollNumber} for ${selectedDate}.`);
+    setQrScanInput('');
   };
 
   const handleAddSlot = (e: React.FormEvent) => {
@@ -203,6 +266,59 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     setAssignedSlots([...assignedSlots, slot]);
     setShowAddSlotModal(false);
     setNewSlot({ courseName: '', batch: '', time: '', room: '', students: 15 });
+  };
+
+  const handleQuizQuestionChange = (questionId: string, field: 'prompt' | 'points', value: string | number) => {
+    setQuizQuestions((prev) => prev.map((question) => question.id === questionId ? { ...question, [field]: field === 'points' ? Number(value) : value } : question));
+  };
+
+  const handleQuizOptionChange = (questionId: string, optionId: string, value: string) => {
+    setQuizQuestions((prev) => prev.map((question) => question.id === questionId ? {
+      ...question,
+      options: question.options.map((option) => option.id === optionId ? { ...option, text: value } : option)
+    } : question));
+  };
+
+  const handleQuizCorrectToggle = (questionId: string, optionId: string) => {
+    setQuizQuestions((prev) => prev.map((question) => question.id === questionId ? {
+      ...question,
+      options: question.options.map((option) => ({ ...option, isCorrect: option.id === optionId }))
+    } : question));
+  };
+
+  const addQuizQuestion = () => {
+    setQuizQuestions((prev) => [
+      ...prev,
+      {
+        id: `q-${Date.now()}`,
+        prompt: '',
+        points: 1,
+        options: [
+          { id: `opt-${Date.now()}-1`, text: '', isCorrect: true },
+          { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }
+        ]
+      }
+    ]);
+  };
+
+  const handlePublishQuiz = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const createdQuiz = await portalApi.createQuiz('trainer', {
+        title: quizBuilder.title,
+        courseId: quizBuilder.courseId,
+        totalQuestions: Number(quizBuilder.totalQuestions || quizQuestions.length),
+        timeLimitMinutes: Number(quizBuilder.timeLimitMinutes),
+        questions: quizQuestions,
+        status: quizBuilder.status
+      });
+      setQuizzes((prev) => [createdQuiz, ...prev]);
+      setQuizBuilder({ title: '', courseId: 'course-1', totalQuestions: '1', timeLimitMinutes: '15', status: 'PUBLISHED' });
+      setQuizQuestions([{ id: `q-${Date.now()}-1`, prompt: '', points: 1, options: [{ id: `opt-${Date.now()}-1`, text: '', isCorrect: true }, { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }] }]);
+      setQuizMessage('Quiz published successfully and is now available to your students.');
+    } catch (error: any) {
+      setQuizMessage(error.message || 'Quiz publishing failed.');
+    }
   };
 
   const handleSaveProfile = (e: React.FormEvent) => {
@@ -225,17 +341,28 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     }, 1500);
   };
 
-  // Days of the week helper for July 11, 2026 week
-  // Sunday Jul 5 - Sat Jul 11 (July 11 is Saturday)
-  const daysOfWeek = [
-    { day: 'Sun', date: 5 },
-    { day: 'Mon', date: 6 },
-    { day: 'Tue', date: 7 },
-    { day: 'Wed', date: 8 },
-    { day: 'Thu', date: 9 },
-    { day: 'Fri', date: 10 },
-    { day: 'Sat', date: 11 },
-  ];
+  const getDayName = (date: Date) => date.toLocaleDateString('en-US', { weekday: 'long' });
+
+  const slotMatchesDay = (slotTime: string, targetDate: Date) => {
+    const dayName = getDayName(targetDate).toLowerCase();
+    const shortName = dayName.slice(0, 3);
+    const candidate = slotTime.toLowerCase();
+    return candidate.includes(dayName) || candidate.includes(shortName);
+  };
+
+  const todayIso = formatDateInputValue(new Date());
+  const weekStart = new Date(currentDate);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const daysOfWeek = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart);
+    date.setDate(weekStart.getDate() + index);
+    return {
+      day: date.toLocaleDateString('en-US', { weekday: 'short' }),
+      date: date.getDate(),
+      iso: formatDateInputValue(date),
+      isToday: formatDateInputValue(date) === todayIso
+    };
+  });
 
   // Calendar calculation
   const getDaysInMonth = (year: number, month: number) => {
@@ -255,6 +382,15 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   const calendarMonth = currentDate.getMonth();
   const daysInMonth = getDaysInMonth(calendarYear, calendarMonth);
   const firstDayIndex = getFirstDayOfMonth(calendarYear, calendarMonth);
+  const monthStart = formatDateInputValue(new Date(calendarYear, calendarMonth, 1));
+  const monthEnd = formatDateInputValue(new Date(calendarYear, calendarMonth + 1, 0));
+  const scheduledCalendarDates = new Set(buildClassDatesForRange(monthStart, monthEnd, assignedSlots.map((slot: TrainingSlot) => slot.time)));
+  const selectedDateLabel = selectedCalendarDate !== null
+    ? formatDateInputValue(new Date(calendarYear, calendarMonth, selectedCalendarDate))
+    : null;
+  const selectedDateEvents = selectedDateLabel
+    ? assignedSlots.filter((slot: TrainingSlot) => slotMatchesDay(slot.time, new Date(selectedDateLabel)))
+    : [];
 
   const prevMonth = () => {
     setCurrentDate(new Date(calendarYear, calendarMonth - 1, 1));
@@ -265,7 +401,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   };
 
   // Filtered Attendance Records
-  const filteredAttendance = attendanceRecords.filter(rec => {
+  const filteredAttendance = attendanceRecords.filter((rec: AttendanceRecord) => {
     const matchesSearch = rec.studentName.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           rec.rollNumber.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesSlot = selectedSlot === 'all' ? true : rec.slot === selectedSlot;
@@ -414,27 +550,19 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
       {/* MAIN CONTENT WORKSPACE */}
       <main className="flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full space-y-6">
         
-        {/* SECURE NETWORK SIMULATION CONTROLLER */}
+        {/* SUPABASE STATUS BAR */}
         <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs shadow-3xs">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-pulse"></span>
-            <span className="font-bold text-slate-700">HEC FEDERAL SYLLABUS GATEWAY SECURELY LINKED</span>
+            <span className="font-bold text-slate-700">SUPABASE LIVE SYNC: ACTIVE</span>
           </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input 
-                type="checkbox" 
-                checked={simulateFailure} 
-                onChange={(e) => setSimulateFailure(e.target.checked)}
-                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-              />
-              <span className="text-slate-600 font-bold font-mono text-[10px]">Simulate HEC Connection Error</span>
-            </label>
+          <div className="flex items-center gap-3">
+            <span className="text-slate-500 text-[10px]">Trainer schedules and attendance are synced from your connected backend.</span>
             <button
-              onClick={() => loadTrainerData()}
+              onClick={() => void loadTrainerData()}
               className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all text-[11px]"
             >
-              Force Sync Ledger
+              Refresh Ledger
             </button>
           </div>
         </div>
@@ -448,16 +576,10 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
             <p className="text-[11px] font-mono leading-relaxed">{apiError}</p>
             <div className="flex gap-2 pt-1">
               <button 
-                onClick={() => loadTrainerData()}
+                onClick={() => void loadTrainerData()}
                 className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition-all"
               >
                 Retry Dispatch
-              </button>
-              <button 
-                onClick={() => setSimulateFailure(false)}
-                className="px-3.5 py-1.5 font-bold text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition-all"
-              >
-                Disable Simulation
               </button>
             </div>
           </div>
@@ -473,7 +595,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
               {activeTab === 'profile' && 'My Profile'}
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Logged in as {profile.fullName} ({profile.employeeId}) • July 11, 2026
+              Logged in as {profile.fullName} ({profile.employeeId}) • {formatLongDate(new Date())}
             </p>
           </div>
 
@@ -492,9 +614,9 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                   className="text-xs font-semibold text-slate-700 bg-transparent border-none focus:outline-hidden focus:ring-0 cursor-pointer"
                 >
                   <option value="all">Choose a slot (All)</option>
-                  <option value="Morning Slot (09:00 AM - 12:00 PM)">Morning Slot (09-12)</option>
-                  <option value="Afternoon Slot (02:00 PM - 05:00 PM)">Afternoon Slot (14-17)</option>
-                  <option value="Evening Slot (06:00 PM - 09:00 PM)">Evening Slot (18-21)</option>
+                  <option value="Mon/Wed 09:00 AM - 12:00 PM">Mon/Wed Morning</option>
+                  <option value="Tue/Thu 02:00 PM - 05:00 PM">Tue/Thu Afternoon</option>
+                  <option value="Friday 06:00 PM - 09:00 PM">Friday Evening</option>
                 </select>
               </div>
             )}
@@ -654,29 +776,26 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
               
               {/* Row of 7 Day Boxes */}
               <div className="grid grid-cols-7 gap-2">
-                {daysOfWeek.map((d, index) => {
-                  const isCurrentDay = d.date === 11; // Sat July 11, 2026 is current day
-                  return (
-                    <div 
-                      key={index} 
-                      className={`flex flex-col items-center justify-center p-3 rounded-xl transition-all ${
-                        isCurrentDay 
-                          ? 'bg-blue-50/50 border-2 border-blue-600 shadow-xs' 
-                          : 'border border-slate-100 bg-white hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className={`text-xs font-medium ${isCurrentDay ? 'text-blue-600 font-bold' : 'text-slate-400'}`}>
-                        {d.day}
-                      </span>
-                      <span className={`text-lg font-bold mt-1 font-display ${isCurrentDay ? 'text-blue-700' : 'text-slate-800'}`}>
-                        {d.date}
-                      </span>
-                      {isCurrentDay && (
-                        <span className="w-1.5 h-1.5 bg-blue-600 rounded-full mt-1.5"></span>
-                      )}
-                    </div>
-                  );
-                })}
+                {daysOfWeek.map((d, index) => (
+                  <div 
+                    key={`${d.iso}-${index}`} 
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl transition-all ${
+                      d.isToday
+                        ? 'bg-blue-50/50 border-2 border-blue-600 shadow-xs' 
+                        : 'border border-slate-100 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className={`text-xs font-medium ${d.isToday ? 'text-blue-600 font-bold' : 'text-slate-400'}`}>
+                      {d.day}
+                    </span>
+                    <span className={`text-lg font-bold mt-1 font-display ${d.isToday ? 'text-blue-700' : 'text-slate-800'}`}>
+                      {d.date}
+                    </span>
+                    {d.isToday && (
+                      <span className="w-1.5 h-1.5 bg-blue-600 rounded-full mt-1.5"></span>
+                    )}
+                  </div>
+                ))}
               </div>
               
               <div className="mt-4 bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between">
@@ -816,6 +935,34 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                 </div>
               </div>
             </div>
+
+            {/* QR CHECK-IN BAR */}
+            <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800">QR Check-In</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Scan a student QR code to mark attendance for the selected class date.</p>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                <input
+                  type="text"
+                  value={qrScanInput}
+                  onChange={(e) => setQrScanInput(e.target.value)}
+                  placeholder="SCHOOL-QR|roll|course|date"
+                  className="border border-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white min-w-[220px]"
+                />
+                <button
+                  onClick={handleQrScan}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs px-3.5 py-2 rounded-lg transition-all"
+                >
+                  Check In
+                </button>
+              </div>
+            </div>
+            {scanMessage && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-700">
+                {scanMessage}
+              </div>
+            )}
 
             {/* RESULTS TABLE / LIST AREA */}
             <div className="bg-white rounded-2xl border border-slate-200/60 shadow-xs overflow-hidden">
@@ -963,8 +1110,9 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                   </button>
                   <button 
                     onClick={() => {
-                      setCurrentDate(new Date(2026, 6, 11));
-                      setSelectedCalendarDate(11);
+                      const today = new Date();
+                      setCurrentDate(today);
+                      setSelectedCalendarDate(today.getDate());
                     }}
                     className="text-xs font-semibold px-2.5 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 rounded-lg text-slate-600 transition-all cursor-pointer font-mono"
                   >
@@ -1000,9 +1148,11 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                 {/* Date numbers */}
                 {Array.from({ length: daysInMonth }).map((_, i) => {
                   const dateNum = i + 1;
-                  // We treat July 11, 2026 as current date
-                  const isCurrentDate = calendarMonth === 6 && calendarYear === 2026 && dateNum === 11;
+                  const dateValue = new Date(calendarYear, calendarMonth, dateNum);
+                  const dateString = formatDateInputValue(dateValue);
+                  const isCurrentDate = dateString === todayIso;
                   const isSelected = selectedCalendarDate === dateNum;
+                  const hasSchedule = scheduledCalendarDates.has(dateString);
 
                   return (
                     <button
@@ -1023,8 +1173,8 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                         <span className="w-1.5 h-1.5 bg-white rounded-full mb-1"></span>
                       )}
 
-                      {/* mock events markers */}
-                      {!isCurrentDate && (dateNum === 6 || dateNum === 8 || dateNum === 15) && (
+                      {/* schedule marker */}
+                      {hasSchedule && (
                         <span className="w-1.5 h-1.5 bg-blue-500 rounded-full mb-1"></span>
                       )}
                     </button>

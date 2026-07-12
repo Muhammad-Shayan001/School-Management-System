@@ -56,6 +56,19 @@ export interface QuizRule {
   text: string;
 }
 
+export interface QuizOption {
+  id: string;
+  text: string;
+  isCorrect?: boolean;
+}
+
+export interface QuizQuestion {
+  id: string;
+  prompt: string;
+  points: number;
+  options: QuizOption[];
+}
+
 export interface Quiz {
   id: string;
   title: string;
@@ -65,5 +78,22 @@ export interface Quiz {
   status: string;
   score?: string;
   securityLevel: string;
+  questions?: QuizQuestion[];
+}
+
+export interface QuizAnswer {
+  questionId: string;
+  selectedOptionId: string;
+}
+
+export interface QuizAttempt {
+  id: string;
+  quizId: string;
+  studentId: string;
+  studentName?: string;
+  submittedAt: string;
+  scoreEarned: number;
+  totalPossible: number;
+  answers?: QuizAnswer[];
 }
 
