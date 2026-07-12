@@ -108,6 +108,44 @@ const seedAttendance = [
   }
 ];
 
+// In-memory demo store and helpers
+const demo: any = {};
+
+function isDemo() {
+  return !supabase;
+}
+
+function base64Url(input: Buffer | string) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
+  return buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function signJwt(payload: object, secret: string) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const headerB = base64Url(JSON.stringify(header));
+  const payloadB = base64Url(JSON.stringify(payload));
+  const toSign = `${headerB}.${payloadB}`;
+  const sig = require('crypto').createHmac('sha256', secret).update(toSign).digest();
+  const sigB = base64Url(sig);
+  return `${toSign}.${sigB}`;
+}
+
+function verifySignedJwt(token: string, secret: string) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [headerB, payloadB, sigB] = parts;
+    const toSign = `${headerB}.${payloadB}`;
+    const expected = require('crypto').createHmac('sha256', secret).update(toSign).digest();
+    const expectedB = base64Url(expected);
+    if (expectedB !== sigB) return null;
+    const payloadJson = Buffer.from(payloadB.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+    return JSON.parse(payloadJson);
+  } catch (e) {
+    return null;
+  }
+}
+
 function mapCourseRow(row: any): StudentCourse {
   return {
     id: String(row.id || 'course-1'),
@@ -235,6 +273,7 @@ export async function getQuizzes(role: 'student' | 'trainer', courseId?: string)
   if (!supabase) {
     return seedQuizzes;
   }
+  
 
   try {
     let query = supabase.from('quizzes').select('*').order('id', { ascending: true });
@@ -247,7 +286,12 @@ export async function getQuizzes(role: 'student' | 'trainer', courseId?: string)
     if (!data || data.length === 0) {
       return seedQuizzes;
     }
-    return data.map(mapQuizRow);
+    const mapped = data.map(mapQuizRow);
+    // Role-based visibility: students only see published/completed quizzes
+    if (role === 'student') {
+      return mapped.filter((q) => q.status === 'PUBLISHED' || q.status === 'COMPLETED');
+    }
+    return mapped;
   } catch (error) {
     console.warn('Supabase quizzes fetch failed, using local seed data.', error);
     return seedQuizzes;
@@ -256,16 +300,28 @@ export async function getQuizzes(role: 'student' | 'trainer', courseId?: string)
 
 export async function createQuiz(role: 'trainer', quizData: { title: string; courseId: string; totalQuestions: number; timeLimitMinutes: number; questions?: any[]; status?: string }): Promise<any> {
   if (!supabase) {
-    return {
+    const status = 'PUBLISHED';
+    const newQuiz = {
       id: `quiz-${Date.now()}`,
       title: quizData.title,
       courseId: quizData.courseId,
       totalQuestions: quizData.totalQuestions,
       timeLimitMinutes: quizData.timeLimitMinutes,
-      status: quizData.status || 'PUBLISHED',
+      status,
       securityLevel: 'Supabase Connected Security',
       questions: quizData.questions || []
     };
+
+    try {
+      // add to local seed so other parts of the app (student portal) see it in demo mode
+      (seedQuizzes as any).unshift(newQuiz);
+      // notify other windows/components in same page
+      try { window.dispatchEvent(new CustomEvent('quizzes-updated')); } catch {}
+    } catch (e) {
+      // ignore
+    }
+
+    return newQuiz;
   }
 
   try {
@@ -275,7 +331,7 @@ export async function createQuiz(role: 'trainer', quizData: { title: string; cou
       course_id: quizData.courseId,
       total_questions: quizData.totalQuestions,
       time_limit_minutes: quizData.timeLimitMinutes,
-      status: quizData.status || 'PUBLISHED',
+        status: quizData.status || 'PUBLISHED',
       security_level: 'Supabase Connected Security',
       questions: quizData.questions || [],
       role
@@ -367,6 +423,54 @@ export async function createQuizAttempt(role: 'student', payload: { quizId: stri
   }
 }
 
+export async function updateQuiz(role: 'trainer' | 'admin', quizId: string, quizData: { title?: string; courseId?: string; totalQuestions?: number; timeLimitMinutes?: number; questions?: any[]; status?: string }): Promise<any> {
+  if (!supabase) {
+    try {
+      const idx = (seedQuizzes as any).findIndex((q: any) => q.id === quizId);
+      if (idx >= 0) {
+        const updated = { ...(seedQuizzes as any)[idx], ...quizData };
+        (seedQuizzes as any)[idx] = updated;
+        try { window.dispatchEvent(new CustomEvent('quizzes-updated')); } catch {}
+        return updated;
+      }
+
+      // If not found in seed, create a new quiz entry in demo mode so updates don't fail
+      const newQuiz = {
+        id: quizId || `quiz-${Date.now()}`,
+        title: quizData.title || 'Untitled Assessment',
+        courseId: quizData.courseId || 'course-1',
+        totalQuestions: quizData.totalQuestions ?? (quizData.questions ? quizData.questions.length : 0),
+        timeLimitMinutes: quizData.timeLimitMinutes ?? 20,
+        status: quizData.status || 'PUBLISHED',
+        securityLevel: 'Supabase Demo',
+        questions: quizData.questions || []
+      };
+      (seedQuizzes as any).unshift(newQuiz);
+      try { window.dispatchEvent(new CustomEvent('quizzes-updated')); } catch {}
+      return newQuiz;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  try {
+    const payload: any = {};
+    if (quizData.title !== undefined) payload.title = quizData.title;
+    if (quizData.courseId !== undefined) payload.course_id = quizData.courseId;
+    if (quizData.totalQuestions !== undefined) payload.total_questions = quizData.totalQuestions;
+    if (quizData.timeLimitMinutes !== undefined) payload.time_limit_minutes = quizData.timeLimitMinutes;
+    if (quizData.questions !== undefined) payload.questions = quizData.questions;
+    if (quizData.status !== undefined) payload.status = quizData.status;
+
+    const { data, error } = await supabase.from('quizzes').update(payload).eq('id', quizId).select('*').single();
+    if (error) throw error;
+    return mapQuizRow(data);
+  } catch (error) {
+    console.warn('Supabase quiz update failed.', error);
+    return null;
+  }
+}
+
 export async function getQuizAttempts(role: 'trainer' | 'student', quizId: string): Promise<QuizAttempt[]> {
   if (!supabase) {
     return [];
@@ -455,4 +559,73 @@ export async function submitAttendance(role: 'trainer', payload: { courseId: str
     console.warn('Supabase attendance insert failed.', error);
     return { success: true, message: 'Attendance saved locally while Supabase is unavailable.' };
   }
+}
+
+// QR & Attendance helpers
+export async function getStudentQrToken(studentId: string) {
+  if (isDemo()) {
+    // demo: sign a token locally using `uid` claim
+    const secret = process.env.QR_TOKEN_SECRET || 'demo-insecure-secret';
+    const payload = { uid: studentId, iat: Math.floor(Date.now() / 1000) };
+    const jwt = signJwt(payload, secret);
+    return { studentId, jwt, qrUrl: `https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=${encodeURIComponent(jwt)}` };
+  }
+
+  const { data, error } = await supabase.from('student_qr_tokens').select('*').eq('student_id', studentId).single();
+  if (error && error.code !== 'PGRST116') throw error; // not found
+  if (data) return data;
+
+  // create one
+  const tokenPayload = { uid: studentId, iat: Math.floor(Date.now() / 1000) };
+  const secret = process.env.QR_TOKEN_SECRET || 'demo-insecure-secret';
+  const jwt = signJwt(tokenPayload, secret);
+  const insert = await supabase.from('student_qr_tokens').insert({ student_id: studentId, jwt_token: jwt }).select().single();
+  if (insert.error) throw insert.error;
+  return { studentId, jwt, qrUrl: `https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=${encodeURIComponent(jwt)}` };
+}
+
+export async function createAttendanceSession(session: { id: string; class_id: string; date: string; period?: string; subject?: string; taken_by?: string }) {
+  if (isDemo()) {
+    demo.attendanceSessions = demo.attendanceSessions || [];
+    demo.attendanceSessions.push({ ...session, status: 'OPEN', started_at: new Date().toISOString() });
+    return session;
+  }
+
+  const { data, error } = await supabase.from('attendance_sessions').insert(session).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function scanAttendanceToken(sessionId: string, token: string, scannedBy?: string) {
+  // token can be either a plain SCHOOL-QR payload (SCHOOL-QR|<uid>|...) or a signed JWT including `uid` claim
+  const parseToken = (tok: string) => {
+    if (!tok) return null;
+    if (tok.startsWith('SCHOOL-QR|')) {
+      const parts = tok.split('|');
+      const uid = parts[1] || null;
+      return { uid };
+    }
+    const secret = process.env.QR_TOKEN_SECRET || 'demo-insecure-secret';
+    return verifySignedJwt(tok, secret);
+  };
+
+  const parsed = parseToken(token);
+  if (!parsed || (!parsed.uid && !parsed.studentId)) throw new Error('Invalid token');
+
+  const studentUid = parsed.uid || parsed.studentId;
+
+  if (isDemo()) {
+    const record = { id: `rec-${Math.random().toString(36).slice(2,9)}`, session_id: sessionId, student_id: studentUid, status: 'Present', marked_at: new Date().toISOString(), marked_by: scannedBy };
+    demo.attendanceRecords = demo.attendanceRecords || [];
+    // idempotent insert
+    const exists = demo.attendanceRecords.find((r: any) => r.session_id === sessionId && r.student_id === studentUid);
+    if (!exists) demo.attendanceRecords.push(record);
+    return record;
+  }
+
+  // production: upsert idempotently
+  const record = { session_id: sessionId, student_id: studentUid, status: 'Present', marked_by: scannedBy };
+  const { data, error } = await supabase.from('attendance_records').insert(record).onConflict(['session_id', 'student_id']).ignore().select().single();
+  if (error) throw error;
+  return data || record;
 }

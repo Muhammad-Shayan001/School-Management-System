@@ -89,7 +89,7 @@ export async function POST(request: Request) {
       courseId,
       totalQuestions: totalQuestions || 10,
       timeLimitMinutes: timeLimitMinutes || 20,
-      status: 'ACTIVE',
+      status: 'PUBLISHED',
       securityLevel: 'Federal Board Integrated'
     };
 
@@ -106,5 +106,25 @@ export async function POST(request: Request) {
       JSON.stringify({ success: false, message: 'Server Error: Invalid JSON input format.' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
+  }
+}
+
+export async function PUT(request: Request) {
+  const { user, errorResponse } = await verifyAuth(request);
+  if (errorResponse) return errorResponse;
+
+  try {
+    const { searchParams } = new URL(request.url);
+    const quizId = searchParams.get('quizId');
+    if (!quizId) {
+      return new Response(JSON.stringify({ success: false, message: 'Missing quizId' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const body = await request.json();
+    // In this mock route we simply return updated payload merging id
+    const updated = { id: quizId, ...body };
+    return new Response(JSON.stringify({ success: true, quiz: updated }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error: any) {
+    return new Response(JSON.stringify({ success: false, message: error.message || 'Update failed.' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

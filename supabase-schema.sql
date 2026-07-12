@@ -128,3 +128,42 @@ insert into public.attendance (id, student_name, roll_number, course_id, date, s
 values
   ('att-1', 'Shayan Javed', 'LHR-2026-1082', 'course-1', '2026-07-12', 'Present', 0, 'Morning Slot (09:00 AM - 12:00 PM)', 'trainer')
 on conflict (id) do nothing;
+
+-- New tables for QR-based attendance system
+create table if not exists public.student_qr_tokens (
+  student_id text primary key,
+  jwt_token text not null,
+  generated_at timestamptz default now(),
+  role text default 'student'
+);
+
+create table if not exists public.attendance_sessions (
+  id text primary key,
+  class_id text not null,
+  date date not null,
+  period text,
+  subject text,
+  taken_by text,
+  started_at timestamptz default now(),
+  ended_at timestamptz,
+  status text default 'OPEN',
+  role text default 'trainer'
+);
+
+create table if not exists public.attendance_records (
+  id text primary key,
+  session_id text not null,
+  student_id text not null,
+  status text default 'Present',
+  marked_at timestamptz default now(),
+  marked_by text,
+  role text default 'trainer'
+);
+
+alter table public.student_qr_tokens enable row level security;
+alter table public.attendance_sessions enable row level security;
+alter table public.attendance_records enable row level security;
+
+create policy "Allow teachers full access to attendance sessions" on public.attendance_sessions for all using (true) with check (true);
+create policy "Allow teachers full access to attendance records" on public.attendance_records for all using (true) with check (true);
+create policy "Allow students read own qr token" on public.student_qr_tokens for select using (true) with check (true);

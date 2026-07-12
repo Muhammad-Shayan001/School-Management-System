@@ -26,6 +26,7 @@ import {
 import { StudentCourse, FeeHistory, Quiz, QuizQuestion } from '../types';
 import { portalApi } from '../lib/apiClient';
 import { calculateQuizResult } from '../lib/quizUtils';
+import StudentQrCard from './StudentQrCard';
 
 interface StudentPortalProps {
   onSwitchToTrainer: () => void;
@@ -52,6 +53,7 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
   
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null);
@@ -166,6 +168,20 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
   useEffect(() => {
     void loadStudentData();
   }, []);
+
+  useEffect(() => {
+    const handler = () => void loadStudentData();
+    window.addEventListener('quizzes-updated', handler as EventListener);
+    return () => window.removeEventListener('quizzes-updated', handler as EventListener);
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (isDarkMode) document.body.classList.add('dark');
+      else document.body.classList.remove('dark');
+    } catch (e) {}
+    return () => {};
+  }, [isDarkMode]);
 
   // Quiz Rules
   const quizRules = [
@@ -282,6 +298,7 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
           >
             <MessageSquare size={12} /> Feedback
           </button>
+          <button onClick={() => setShowQrModal(true)} className="ml-2 rounded-lg border px-3 py-2 text-sm font-semibold">My ID Card</button>
         </div>
       </header>
 
@@ -1106,6 +1123,20 @@ export default function StudentPortal({ onSwitchToTrainer }: StudentPortalProps)
               >
                 Close Video Player
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 text-white">
+          <div className="bg-white rounded-xl p-6 text-slate-900">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">My Student ID Card</h3>
+              <button onClick={() => setShowQrModal(false)} className="text-sm text-slate-500">Close</button>
+            </div>
+            <div className="mt-4">
+              <StudentQrCard studentId={activeDetailCourse?.rollNumber || 'LHR-2026-1082'} studentName={'Shayan Javed'} />
             </div>
           </div>
         </div>

@@ -1,6 +1,8 @@
 import { verifyAuth } from '../../middleware';
 import { createQuizAttempt, getQuizAttempts } from '../../../../lib/supabaseClient';
 
+// Note: For environments without Supabase, this route delegates to the client functions which handle fallback.
+
 export async function GET(request: Request) {
   const { user, errorResponse } = await verifyAuth(request);
   if (errorResponse) return errorResponse;

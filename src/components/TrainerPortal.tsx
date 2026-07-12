@@ -27,6 +27,7 @@ import {
   Search
 } from 'lucide-react';
 import { TrainerProfile, AttendanceRecord, StudentCourse, Quiz, QuizQuestion, QuizOption } from '../types';
+import TrainerScannerModal from './TrainerScannerModal';
 import { portalApi } from '../lib/apiClient';
 import { buildAttendanceRecords, buildClassDatesForRange } from '../lib/attendanceUtils';
 
@@ -36,7 +37,7 @@ interface TrainerPortalProps {
 
 export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps) {
   // Navigation tabs for trainer portal
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'attendance' | 'profile'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'calendar' | 'attendance' | 'profile' | 'quizzes'>('dashboard');
 
   // Interactive Trainer States
   const [profile, setProfile] = useState<TrainerProfile>({
@@ -93,6 +94,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   // Async API hooks and error handlers
   const [isLoading, setIsLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [isDarkMode, setIsDarkMode] = useState(false);
 
   const loadTrainerData = async () => {
     setIsLoading(true);
@@ -126,6 +128,14 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     void loadTrainerData();
   }, []);
 
+  useEffect(() => {
+    try {
+      if (isDarkMode) document.body.classList.add('dark');
+      else document.body.classList.remove('dark');
+    } catch (e) {}
+    return () => {};
+  }, []);
+
   const [showAddSlotModal, setShowAddSlotModal] = useState(false);
   const [newSlot, setNewSlot] = useState({ courseName: '', batch: '', time: '', room: '', students: 15 });
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
@@ -136,6 +146,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     timeLimitMinutes: '15',
     status: 'PUBLISHED'
   });
+  const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([
     {
       id: `q-${Date.now()}-1`,
@@ -143,7 +154,9 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
       points: 1,
       options: [
         { id: `opt-${Date.now()}-1`, text: '', isCorrect: true },
-        { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }
+        { id: `opt-${Date.now()}-2`, text: '', isCorrect: false },
+        { id: `opt-${Date.now()}-3`, text: '', isCorrect: false },
+        { id: `opt-${Date.now()}-4`, text: '', isCorrect: false }
       ]
     }
   ]);
@@ -178,8 +191,8 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   const [checkedInRollsByDate, setCheckedInRollsByDate] = useState<Record<string, string[]>>({});
   const [qrScanInput, setQrScanInput] = useState('');
   const [scanMessage, setScanMessage] = useState<string | null>(null);
-  const recordsPerPage = 5;
-
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showScannerModal, setShowScannerModal] = useState(false);
   // Mock student directory to populate attendance
   const mockStudents = [
     { name: 'Shayan Javed', roll: 'LHR-2026-1082' },
@@ -191,6 +204,11 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     { name: 'Fatima Sana', roll: 'LHR-2026-1702' },
     { name: 'Saad Ahmed Siddiqui', roll: 'KHI-2026-1823' },
   ];
+
+  const [qrPayload, setQrPayload] = useState('');
+  const [qrStudent, setQrStudent] = useState(mockStudents[0]?.roll || '');
+  const recordsPerPage = 5;
+
 
   const handleGenerateAttendance = () => {
     const scheduleSlots = selectedSlot === 'all'
@@ -250,6 +268,13 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
     setQrScanInput('');
   };
 
+  const generateQrForStudent = (studentRoll: string, date?: string) => {
+    const selectedDate = date || formatDateInputValue(new Date());
+    const payload = `SCHOOL-QR|${studentRoll}|course-1|${selectedDate}`;
+    setQrPayload(payload);
+    try { setShowQrModal(true); } catch {}
+  };
+
   const handleAddSlot = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSlot.courseName || !newSlot.time) return;
@@ -295,7 +320,9 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
         points: 1,
         options: [
           { id: `opt-${Date.now()}-1`, text: '', isCorrect: true },
-          { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }
+          { id: `opt-${Date.now()}-2`, text: '', isCorrect: false },
+          { id: `opt-${Date.now()}-3`, text: '', isCorrect: false },
+          { id: `opt-${Date.now()}-4`, text: '', isCorrect: false }
         ]
       }
     ]);
@@ -304,20 +331,49 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
   const handlePublishQuiz = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const createdQuiz = await portalApi.createQuiz('trainer', {
-        title: quizBuilder.title,
-        courseId: quizBuilder.courseId,
-        totalQuestions: Number(quizBuilder.totalQuestions || quizQuestions.length),
-        timeLimitMinutes: Number(quizBuilder.timeLimitMinutes),
-        questions: quizQuestions,
-        status: quizBuilder.status
-      });
-      setQuizzes((prev) => [createdQuiz, ...prev]);
+      setQuizMessage(null);
+      // Basic validation
+      if (!quizBuilder.title || quizQuestions.length === 0) {
+        setQuizMessage('Please provide a quiz title and at least one question.');
+        return;
+      }
+
+      if (editingQuizId) {
+        const updated = await portalApi.updateQuiz('trainer', editingQuizId, {
+          title: quizBuilder.title,
+          courseId: quizBuilder.courseId,
+          totalQuestions: Number(quizBuilder.totalQuestions || quizQuestions.length),
+          timeLimitMinutes: Number(quizBuilder.timeLimitMinutes),
+          questions: quizQuestions,
+          // When trainer publishes, ensure status becomes PUBLISHED so students can see it
+          status: 'PUBLISHED'
+        });
+        if (!updated) throw new Error('Update failed: no response from server.');
+        setQuizzes((prev) => prev.map(q => q.id === editingQuizId ? updated : q));
+        setEditingQuizId(null);
+        setQuizMessage('Quiz updated successfully.');
+      } else {
+        const createdQuiz = await portalApi.createQuiz('trainer' as any, {
+          title: quizBuilder.title,
+          courseId: quizBuilder.courseId,
+          totalQuestions: Number(quizBuilder.totalQuestions || quizQuestions.length),
+          timeLimitMinutes: Number(quizBuilder.timeLimitMinutes),
+          questions: quizQuestions,
+          // default to PUBLISHED for trainer-created quizzes
+          status: 'PUBLISHED'
+        });
+        if (!createdQuiz) throw new Error('Create failed: no response from server.');
+        setQuizzes((prev) => [createdQuiz, ...prev]);
+        setQuizMessage('Quiz published successfully and is now available to your students.');
+      }
+
       setQuizBuilder({ title: '', courseId: 'course-1', totalQuestions: '1', timeLimitMinutes: '15', status: 'PUBLISHED' });
-      setQuizQuestions([{ id: `q-${Date.now()}-1`, prompt: '', points: 1, options: [{ id: `opt-${Date.now()}-1`, text: '', isCorrect: true }, { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }] }]);
-      setQuizMessage('Quiz published successfully and is now available to your students.');
+      setQuizQuestions([{ id: `q-${Date.now()}-1`, prompt: '', points: 1, options: [{ id: `opt-${Date.now()}-1`, text: '', isCorrect: true }, { id: `opt-${Date.now()}-2`, text: '', isCorrect: false }, { id: `opt-${Date.now()}-3`, text: '', isCorrect: false }, { id: `opt-${Date.now()}-4`, text: '', isCorrect: false }] }]);
+      // notify other components in demo mode
+      try { window.dispatchEvent(new CustomEvent('quizzes-updated')); } catch {}
     } catch (error: any) {
-      setQuizMessage(error.message || 'Quiz publishing failed.');
+      console.error('Publish quiz failed:', error);
+      setQuizMessage(error?.message || 'Quiz publishing failed.');
     }
   };
 
@@ -467,6 +523,18 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
               <CalendarCheck size={22} />
             </button>
             <button
+              id="trainer-nav-quizzes"
+              onClick={() => setActiveTab('quizzes')}
+              title="Quizzes"
+              className={`p-3 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
+                activeTab === 'quizzes'
+                  ? 'bg-emerald-50 text-emerald-700 shadow-2xs'
+                  : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <BookOpen size={22} />
+            </button>
+            <button
               id="trainer-nav-profile"
               onClick={() => setActiveTab('profile')}
               title="Profile"
@@ -535,6 +603,12 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
           >
             <User size={18} />
           </button>
+          <button
+            onClick={() => setActiveTab('quizzes')}
+            className={`p-2 rounded-lg cursor-pointer ${activeTab === 'quizzes' ? 'bg-blue-50 text-blue-600' : 'text-slate-400'}`}
+          >
+            <BookOpen size={18} />
+          </button>
           
           <div className="h-6 w-[1px] bg-slate-200 mx-1"></div>
           
@@ -593,6 +667,7 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
               {activeTab === 'calendar' && 'Calendar'}
               {activeTab === 'attendance' && 'Attendance'}
               {activeTab === 'profile' && 'My Profile'}
+              {activeTab === 'quizzes' && 'Quizzes'}
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
               Logged in as {profile.fullName} ({profile.employeeId}) • {formatLongDate(new Date())}
@@ -646,6 +721,16 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
                   className="bg-slate-950 hover:bg-slate-900 text-white font-semibold text-xs px-3.5 py-2.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Download size={15} /> Download Card
+                </button>
+              </div>
+            )}
+            {activeTab === 'quizzes' && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setQuizBuilder({ title: '', courseId: 'course-1', totalQuestions: '1', timeLimitMinutes: '15', status: 'PUBLISHED' })}
+                  className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs px-4 py-2.5 rounded-xl shadow-xs hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Plus size={16} /> New Quiz
                 </button>
               </div>
             )}
@@ -806,6 +891,132 @@ export default function TrainerPortal({ onSwitchToStudent }: TrainerPortalProps)
               </div>
             </div>
 
+            <div className="bg-white p-6 rounded-2xl border border-slate-200/60 shadow-xs">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-slate-800">Attendance QR</h2>
+                <button onClick={() => setShowQrModal(true)} className="text-xs text-blue-600">Generate QR</button>
+                <button onClick={() => setShowScannerModal(true)} className="ml-3 text-xs text-white bg-blue-600 px-2 py-1 rounded">Open Scanner</button>
+              </div>
+              <p className="text-sm text-slate-500">Generate a QR payload for a student to scan and mark attendance.</p>
+              <div className="mt-4">
+                <label className="text-xs text-slate-500">Select Student</label>
+                <select value={qrStudent} onChange={(e) => setQrStudent(e.target.value)} className="w-full rounded-md border p-2 mt-2">
+                  {mockStudents.map(s => <option key={s.roll} value={s.roll}>{s.name} • {s.roll}</option>)}
+                </select>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => generateQrForStudent(qrStudent)} className="rounded-md bg-blue-600 text-white px-3 py-2 text-sm">Generate for selected</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 text-white">
+          <div className="bg-white rounded-xl p-6 w-[320px] text-slate-900">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">Attendance QR</h3>
+              <button onClick={() => setShowQrModal(false)} className="text-sm text-slate-500">Close</button>
+            </div>
+            <div className="mt-4 text-sm text-slate-600">
+              <p className="mb-2">Payload:</p>
+              <div className="p-2 rounded border bg-slate-50 text-xs break-words">{qrPayload || `SCHOOL-QR|${qrStudent}|course-1|${formatDateInputValue(new Date())}`}</div>
+              <div className="mt-4 flex flex-col items-center">
+                <img src={`https://chart.googleapis.com/chart?cht=qr&chs=220x220&chl=${encodeURIComponent(qrPayload || `SCHOOL-QR|${qrStudent}|course-1|${formatDateInputValue(new Date())}`)}`} alt="qr" />
+                <button onClick={() => { navigator.clipboard.writeText(qrPayload || `SCHOOL-QR|${qrStudent}|course-1|${formatDateInputValue(new Date())}`); }} className="mt-3 rounded-md bg-slate-900 text-white px-3 py-2 text-sm">Copy Payload</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScannerModal && (
+        <TrainerScannerModal
+          sessionId={`session-${formatDateInputValue(new Date())}`}
+          onClose={() => setShowScannerModal(false)}
+          onScanned={(rec: any) => {
+            const studentId = rec?.student_id || rec?.studentId || rec?.student;
+            const dateKey = formatDateInputValue(new Date());
+            setCheckedInRollsByDate((prev: Record<string, string[]>) => ({
+              ...prev,
+              [dateKey]: Array.from(new Set([...(prev[dateKey] || []), studentId]))
+            }));
+            setAttendanceRecords((prev: AttendanceRecord[]) => prev.map((record) => record.rollNumber === studentId && record.date === dateKey ? { ...record, status: 'Present', lateMinutes: 0 } : record));
+            setScanMessage(`Marked present: ${studentId}`);
+            // close modal after scan
+            setShowScannerModal(false);
+          }}
+        />
+      )}
+
+        {/* QUIZZES PAGE */}
+        {activeTab === 'quizzes' && (
+          <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold">Create Quiz</h2>
+              <form onSubmit={handlePublishQuiz} className="mt-4 space-y-3">
+                <input required value={quizBuilder.title} onChange={(event) => setQuizBuilder((prev) => ({ ...prev, title: event.target.value }))} placeholder="Quiz title" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <input value={quizBuilder.courseId} onChange={(event) => setQuizBuilder((prev) => ({ ...prev, courseId: event.target.value }))} placeholder="Course ID" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                  <input value={quizBuilder.totalQuestions} onChange={(event) => setQuizBuilder((prev) => ({ ...prev, totalQuestions: event.target.value }))} placeholder="Questions" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                </div>
+                <input value={quizBuilder.timeLimitMinutes} onChange={(event) => setQuizBuilder((prev) => ({ ...prev, timeLimitMinutes: event.target.value }))} placeholder="Time limit (min)" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Questions</h4>
+                  {quizQuestions.map((q, qi) => (
+                    <div key={q.id} className="p-3 border rounded-lg">
+                      <input value={q.prompt} onChange={(e) => handleQuizQuestionChange(q.id, 'prompt', e.target.value)} placeholder={`Question ${qi + 1}`} className="w-full rounded-md border px-2 py-1 mb-2" />
+                      <div className="space-y-2">
+                        {q.options.map((opt) => (
+                          <div key={opt.id} className="flex gap-2 items-center">
+                            <input type="text" value={opt.text} onChange={(e) => handleQuizOptionChange(q.id, opt.id, e.target.value)} placeholder="Option text" className="flex-1 rounded-md border px-2 py-1" />
+                            <label className="text-xs"><input type="radio" name={`correct-${q.id}`} checked={opt.isCorrect} onChange={() => handleQuizCorrectToggle(q.id, opt.id)} /> Correct</label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <div>
+                    <button type="button" onClick={addQuizQuestion} className="text-xs text-blue-600">+ Add question</button>
+                  </div>
+                </div>
+                <button type="submit" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800">Publish Quiz</button>
+                {quizMessage && <p className="text-sm text-slate-500">{quizMessage}</p>}
+              </form>
+            </div>
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold">Quiz Queue</h2>
+              <div className="mt-4 space-y-3">
+                {quizzes.map((quiz) => (
+                  <div key={quiz.id} className="rounded-2xl border border-slate-200 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="font-semibold">{quiz.title}</p>
+                      <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">{quiz.status}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{quiz.totalQuestions} questions • {quiz.timeLimitMinutes} min</p>
+                    <div className="mt-3 flex gap-2">
+                      <button onClick={async () => {
+                        setSelectedQuizForResults(quiz);
+                        try {
+                          const attempts = await portalApi.getQuizAttempts('trainer', quiz.id);
+                          setSelectedQuizAttempts(attempts as any);
+                        } catch (err) {
+                          setSelectedQuizAttempts([]);
+                        }
+                        setAttemptsModalOpen(true);
+                      }} className="rounded-xl bg-slate-900 px-3 py-1 text-xs text-white">View Results</button>
+                      <button onClick={() => {
+                        setEditingQuizId(quiz.id);
+                        setQuizBuilder({ title: quiz.title, courseId: quiz.courseId, totalQuestions: String(quiz.totalQuestions), timeLimitMinutes: String(quiz.timeLimitMinutes), status: quiz.status });
+                        setQuizQuestions((quiz.questions ?? []).map((q) => ({ id: q.id, prompt: q.prompt, points: q.points, options: q.options } as any)));
+                        setActiveTab('quizzes');
+                      }} className="rounded-xl bg-blue-600 px-3 py-1 text-xs text-white">Edit</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

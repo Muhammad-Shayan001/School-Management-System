@@ -5,6 +5,7 @@ import {
   createQuizAttempt,
   getQuizAttempts,
   getAttendance,
+  updateQuiz,
   getCourses,
   getQuizzes,
   submitAttendance
@@ -68,12 +69,34 @@ export async function safeFetch<T>(
     }
 
     if (endpoint === '/api/quizzes' || endpoint.startsWith('/api/quizzes')) {
+      const params = new URL(endpoint, 'http://localhost').searchParams;
+      const quizId = params.get('quizId') || undefined;
+
       if (options.method === 'POST') {
         const quiz = await createQuiz(role, parseBody(options.body));
         return validator({ quiz });
       }
 
-      const params = new URL(endpoint, 'http://localhost').searchParams;
+      if (options.method === 'PUT') {
+        // update quiz
+        const updated = await updateQuiz(role as any, quizId || '', parseBody(options.body));
+        if (!updated) {
+          console.warn('[apiClient] updateQuiz returned no result, returning fallback object.');
+          const body = parseBody(options.body) || {};
+          const fallback = {
+            id: quizId || `quiz-${Date.now()}`,
+            title: body.title || 'Untitled Assessment',
+            courseId: body.courseId || '',
+            totalQuestions: body.totalQuestions ?? (Array.isArray(body.questions) ? body.questions.length : 0),
+            timeLimitMinutes: body.timeLimitMinutes ?? 20,
+            status: body.status || 'PUBLISHED',
+            questions: body.questions || []
+          };
+          return validator({ quiz: fallback });
+        }
+        return validator({ quiz: updated });
+      }
+
       const quizzes = await getQuizzes(role, params.get('courseId') || undefined);
       return validator({ quizzes });
     }
@@ -192,6 +215,23 @@ export const portalApi = {
       (json) => {
         if (!json || !json.quiz) {
           throw new Error('Invalid schema: Quiz creation confirmation missing.');
+        }
+        return json.quiz;
+      }
+    );
+  },
+  
+  updateQuiz: async (role: 'trainer' | 'admin', quizId: string, quizData: { title?: string; courseId?: string; totalQuestions?: number; timeLimitMinutes?: number; questions?: QuizQuestion[]; status?: string }): Promise<any> => {
+    return safeFetch<any>(
+      `/api/quizzes?quizId=${encodeURIComponent(quizId)}`,
+      role as any,
+      {
+        method: 'PUT',
+        body: JSON.stringify(quizData)
+      },
+      (json) => {
+        if (!json || !json.quiz) {
+          throw new Error('Invalid schema: Quiz update confirmation missing.');
         }
         return json.quiz;
       }

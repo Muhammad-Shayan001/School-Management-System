@@ -114,13 +114,15 @@ export default function AdminPortal({ onSwitchToStudent, onSwitchToTrainer }: Ad
   const handleCreateQuiz = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
-      const createdQuiz = await portalApi.createQuiz('trainer', {
+      const createdQuiz = await portalApi.createQuiz('admin' as any, {
         title: quizForm.title,
         courseId: quizForm.courseId,
         totalQuestions: Number(quizForm.totalQuestions),
-        timeLimitMinutes: Number(quizForm.timeLimitMinutes)
+        timeLimitMinutes: Number(quizForm.timeLimitMinutes),
+        status: 'PUBLISHED'
       });
       setQuizzes((prev) => [createdQuiz, ...prev]);
+      try { window.dispatchEvent(new CustomEvent('quizzes-updated')); } catch {}
       setQuizForm({ title: '', courseId: 'course-1', totalQuestions: '10', timeLimitMinutes: '20' });
       setMessage('Quiz created successfully.');
     } catch (error: any) {
@@ -187,8 +189,8 @@ export default function AdminPortal({ onSwitchToStudent, onSwitchToTrainer }: Ad
         )}
 
         {attemptsModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-            <div className="w-[90%] max-w-2xl bg-white rounded-xl p-6">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 text-white">
+            <div className="w-[90%] max-w-2xl bg-white rounded-xl p-6 text-slate-900">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold">Results for: {selectedQuizForResults?.title}</h3>
                 <button onClick={() => setAttemptsModalOpen(false)} className="text-sm text-slate-500">Close</button>
